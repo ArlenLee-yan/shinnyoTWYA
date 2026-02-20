@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@line/bot-sdk": "^7.5.2",
-    "firebase-admin": "^11.11.1"
+    "firebase-admin": "^11.11.1",
+    "protobufjs": "^7.2.5"
   }
 }
