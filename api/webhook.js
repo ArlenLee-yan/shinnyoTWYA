@@ -272,36 +272,3 @@ async function replyItemMenu(token, category, selectedList) {
   };
   await client.replyMessage(token, { type: 'flex', altText: '請選擇細項', contents: flex });
 }
-```}
-
----
-
-### 部署教學 (Deployment)
-
-這是最關鍵的一步。我們不使用指令列，直接用網頁上傳最簡單。
-
-1.  **上傳程式碼到 GitHub**：
-    * 將這三個檔案推送到您 GitHub 的一個新倉庫 (Repo) 中。
-    * *(如果您不熟悉 Git，也可以直接在 GitHub 網頁上 Create New Repository，然後手動 Create New File 把內容貼上去)*。
-
-2.  **連結 Vercel**：
-    * 登入 Vercel，點擊 **「Add New...」** -> **「Project」**。
-    * 選擇您剛剛建立的 GitHub Repo，點擊 **「Import」**。
-
-3.  **設定環境變數 (Environment Variables)**：
-    * 在部署頁面的 **「Environment Variables」** 區塊，輸入以下 3 個變數 (非常重要！)：
-        * `LINE_CHANNEL_ACCESS_TOKEN`: (填入您的 LINE Token)
-        * `LINE_CHANNEL_SECRET`: (填入您的 LINE Secret)
-        * `FIREBASE_CREDENTIALS`: (打開您剛剛下載的 Firebase JSON 檔案，**全選複製內容**，直接貼進去)
-
-4.  **點擊 Deploy**：
-    * 等待約 1 分鐘，看到滿版煙火畫面代表部署成功。
-    * 複製 Vercel 給您的網址 (通常是 `https://您的專案名.vercel.app`)。
-
-5.  **設定 LINE Webhook**：
-    * 回到 LINE Developers Console。
-    * Webhook URL 填入：`https://您的專案名.vercel.app/api/webhook` (注意後面要加 `/api/webhook`)。
-    * 按 Verify。
-
-**完成！**
-現在您的 Bot 跑在 Vercel 的高速伺服器上，資料存在 Google 的 Firestore 裡。您可以體驗看看，速度絕對是飛快，點選按鈕幾乎沒有延遲。
