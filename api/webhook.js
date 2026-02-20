@@ -9,7 +9,7 @@ const config = {
 
 const client = new line.Client(config);
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   // Vercel 只需要這一行來處理 GET 請求 (LINE Verify 用)
   if (req.method === 'GET') {
     return res.status(200).send('OK');
