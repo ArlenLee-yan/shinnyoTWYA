@@ -8,7 +8,7 @@ const config = {
 
 const client = new line.Client(config);
 
-// ★ 這裡請換成您剛剛部署 GAS 產生的網頁應用程式網址
+// ★ 記得替換成您的 GAS Webhook 網址
 const GAS_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycby9Qh3wbnLcrKZA_CxP31Cq8S00zjoWrmGgTIQWE4e8hubEIvYG-8P-mAnP2TUP67LOHg/exec';
 
 module.exports = async function handler(req, res) {
@@ -21,7 +21,6 @@ module.exports = async function handler(req, res) {
       if (firstEvent.replyToken === '00000000000000000000000000000000' || firstEvent.replyToken === 'ffffffffffffffffffffffffffffffff') {
         return res.status(200).send('OK');
       }
-
       await Promise.all(events.map(event => handleEvent(event)));
     }
     return res.status(200).send('OK');
@@ -57,7 +56,6 @@ async function handleEvent(event) {
         }
       }
       else if (payload.action === 'select_cat') {
-        // 【優化】將資料庫寫入與 LINE 回覆同時進行
         const newState = { step: 4, location: payload.loc || "未知", date: payload.date || "未知", category: payload.val, temp_items: [] };
         await Promise.all([
           stateRef.set(newState),
@@ -71,7 +69,6 @@ async function handleEvent(event) {
         const idx = currentList.indexOf(item);
         if (idx > -1) { currentList.splice(idx, 1); } else { currentList.push(item); }
         
-        // 【優化】並行處理
         await Promise.all([
           stateRef.update({ temp_items: currentList }),
           replyItemMenu(replyToken, userState.category, currentList)
@@ -81,7 +78,6 @@ async function handleEvent(event) {
         if (!userState.step) return;
         const finalItems = (userState.temp_items && userState.temp_items.length > 0) ? userState.temp_items.join(',') : '無';
         
-        // 【優化】並行處理
         await Promise.all([
           stateRef.update({ step: 5, final_items: finalItems }),
           client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItems}\n\n最後一步，請輸入實踐說明 (若無請輸入「無」)：` })
@@ -124,7 +120,6 @@ async function handleEvent(event) {
             db.collection('users').doc(userId).set(newUserData),
             stateRef.delete(),
             client.replyMessage(replyToken, { type: 'text', text: `歡迎 ${parts[2]}！註冊成功。🎉` }),
-            // ★ 非同步呼叫 GAS，背景寫入試算表
             syncToGoogleSheets({ type: 'user', ...newUserData })
           ]);
         } else {
@@ -143,7 +138,6 @@ async function handleEvent(event) {
           db.collection('records').add(newRecordData),
           stateRef.delete(),
           client.replyMessage(replyToken, { type: 'text', text: "🎉 實績回報完成！資料已儲存。" }),
-          // ★ 非同步呼叫 GAS，背景寫入試算表
           syncToGoogleSheets({ type: 'record', ...newRecordData })
         ]);
       }
@@ -156,7 +150,6 @@ async function handleEvent(event) {
 // --- 呼叫 GAS 的同步函式 ---
 async function syncToGoogleSheets(data) {
   try {
-    // Vercel 使用的 Node 18+ 原生支援 fetch
     await fetch(GAS_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -164,11 +157,10 @@ async function syncToGoogleSheets(data) {
     });
   } catch (err) {
     console.error("同步到 Google Sheets 失敗:", err);
-    // 即使失敗也不會導致 LINE 回覆中斷
   }
 }
 
-// --- 以下輔助函式保持不變 ---
+// --- 以下輔助函式與 UI 函式 ---
 async function checkUserIsRegistered(userId) {
   const doc = await db.collection('users').doc(userId).get();
   return doc.exists;
@@ -185,5 +177,82 @@ function parseQueryString(query) {
   return result;
 }
 
-// ... UI 發送函式 (replyLocationMenu 等) 請直接貼上您原本的程式碼，此處省略以節省版面 ...
+async function replyLocationMenu(token) {
+  const options = ["台灣本部", "中壢佈教所", "台中佈教所", "高雄佈教所", "雲林集會所", "花蓮集會所", "線上參加(直播)", "線上參加(VTR)", "其他"];
+  const buttons = options.map(opt => ({
+    type: "button", style: "secondary", height: "sm",
+    action: { type: "postback", label: opt, data: `action=select_loc&val=${opt}` }
+  }));
+  const flex = {
+    type: "bubble",
+    header: { type: "box", layout: "vertical", contents: [{ type: "text", text: "步驟 1/5：請選擇參加地點", weight: "bold", color: "#1DB446" }] },
+    body: { type: "box", layout: "vertical", spacing: "sm", contents: buttons }
+  };
+  await client.replyMessage(token, { type: 'flex', altText: '請選擇地點', contents: flex });
+}
 
+async function replyDateMenu(token, prevLoc) {
+  const now = new Date();
+  now.setHours(now.getHours() + 8);
+  const todayStr = now.toISOString().slice(0,10).replace(/-/g,''); 
+  const todayDisplay = now.toISOString().slice(5,10).replace('-','/'); 
+  
+  const baseData = `action=set_date&loc=${prevLoc}`;
+  const flex = {
+    type: "bubble",
+    header: { type: "box", layout: "vertical", contents: [{ type: "text", text: "步驟 2/5：請選擇實踐日期", weight: "bold", color: "#1DB446" }] },
+    body: {
+      type: "box", layout: "vertical", spacing: "md",
+      contents: [
+        { type: "button", style: "primary", color: "#1DB446", action: { type: "postback", label: `今天 (${todayDisplay})`, data: `${baseData}&val=${todayStr}` } },
+        { type: "button", style: "secondary", action: { type: "datetimepicker", label: "選擇其他日期", data: baseData, mode: "date" } }
+      ]
+    }
+  };
+  await client.replyMessage(token, { type: 'flex', altText: '請選擇日期', contents: flex });
+}
+
+async function replyCategoryMenu(token, prevLoc, prevDate) {
+  const baseData = `action=select_cat&loc=${prevLoc}&date=${prevDate}`;
+  const flex = {
+    type: "bubble",
+    header: { type: "box", layout: "vertical", contents: [{ type: "text", text: "步驟 3/5：請選擇登錄項目", weight: "bold", color: "#1DB446" }] },
+    body: {
+      type: "box", layout: "vertical", spacing: "md",
+      contents: [
+        { type: "button", style: "primary", action: { type: "postback", label: "青年會行事/活動(含VTR)", data: `${baseData}&val=青年會行事/活動(含VTR)` } },
+        { type: "button", style: "primary", action: { type: "postback", label: "個人實踐項目 (可複選)", data: `${baseData}&val=個人實踐項目 (可複選)` } }
+      ]
+    }
+  };
+  await client.replyMessage(token, { type: 'flex', altText: '請選擇項目', contents: flex });
+}
+
+async function replyItemMenu(token, category, selectedList) {
+  let options = [];
+  if (category === "青年會行事/活動(含VTR)") {
+    options = ["回歸聖地親苑", "6/9靈尊教導院祈念未來", "7/2靈尊真導院祈念未來", "8/6真如靈祖祈念未來", "7/19真如開祖祈念未來", "夏期鍊成第一天(8-9月)", "夏期鍊成第二天(9-10月)", "演講大會(9-10月)", "蛇瀧研修說明會(11-12月)", "青年經親說明會(12-1月)", "幹部委員說明會(12-1月)", "蛇瀧研修實績確認者說明會", "親子一體運動會", "其他"];
+  } else {
+    options = ["度眾", "歡喜", "奉侍", "舉辦青年家庭集會", "參加集會", "接心", "參加法會", "參加青年會合", "參加會座(初座/菩提會/本會座)", "參加幹部委員研修", "參加青年經親研修", "參加幹部會合", "參加部門會合", "參加信仰心向上會合", "拜讀一如之道究道篇(全)", "拜讀真如苑歷史", "參加總部會", "參加總部會會後會", "回歸聖地親苑", "其他"];
+  }
+  
+  const buttons = options.map(opt => {
+    const isSelected = selectedList.includes(opt);
+    return {
+      type: "button", style: isSelected ? "primary" : "secondary", color: isSelected ? "#1DB446" : "#aaaaaa", height: "sm",
+      action: { type: "postback", label: isSelected ? `✅ ${opt}` : opt, data: `action=toggle_item&val=${opt}` }
+    };
+  });
+  buttons.push({ type: "separator", margin: "md" });
+  buttons.push({ type: "button", style: "link", height: "sm", action: { type: "postback", label: `確認送出 (${selectedList.length}項)`, data: "action=confirm_items" } });
+
+  const flex = {
+    type: "bubble",
+    header: { type: "box", layout: "vertical", contents: [
+      { type: "text", text: "步驟 4/5：實踐項目 (可複選)", weight: "bold", color: "#1DB446" },
+      { type: "text", text: category, size: "xs", color: "#aaaaaa", wrap: true }
+    ]},
+    body: { type: "box", layout: "vertical", spacing: "sm", contents: buttons }
+  };
+  await client.replyMessage(token, { type: 'flex', altText: '請選擇細項', contents: flex });
+}
