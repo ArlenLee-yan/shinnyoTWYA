@@ -34,6 +34,9 @@ async function handleEvent(event) {
   const userId = event.source.userId;
   const replyToken = event.replyToken;
 
+  // ★ 新增：觸發 Loading 動畫 (不使用 await，讓它在背景瞬間執行，不卡主程式)
+  showLoadingAnimation(userId).catch(console.error);
+
   try {
     const stateRef = db.collection('states').doc(userId);
     const userSnap = await stateRef.get();
@@ -95,7 +98,7 @@ async function handleEvent(event) {
         } else {
           await Promise.all([
             stateRef.set({ step: 'registering' }),
-            client.replyMessage(replyToken, { type: 'text', text: "【歡迎新朋友】\n請直接輸入：\n部會 經名 姓名" })
+            client.replyMessage(replyToken, { type: 'text', text: "【歡迎新朋友】\n請直接輸入：\n部會 經名 姓名\n範例：台灣一部 王大明 王小明" })
           ]);
         }
         return;
@@ -144,6 +147,25 @@ async function handleEvent(event) {
     }
   } catch (error) {
     console.error("處理事件時發生錯誤:", error);
+  }
+}
+
+// --- ★ 新增：呼叫 LINE Loading 動畫的函式 ---
+async function showLoadingAnimation(userId) {
+  try {
+    await fetch('https://api.line.me/v2/bot/chat/loading/start', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({
+        chatId: userId,
+        loadingSeconds: 5 // 設定顯示 5 秒，但只要我們回傳訊息，動畫就會提早自動消失
+      })
+    });
+  } catch (err) {
+    console.error("Loading animation 觸發失敗:", err);
   }
 }
 
