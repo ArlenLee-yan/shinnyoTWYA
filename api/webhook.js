@@ -34,7 +34,6 @@ async function handleEvent(event) {
   const userId = event.source.userId;
   const replyToken = event.replyToken;
 
-  // ★ 新增：觸發 Loading 動畫 (不使用 await，讓它在背景瞬間執行，不卡主程式)
   showLoadingAnimation(userId).catch(console.error);
 
   try {
@@ -53,6 +52,7 @@ async function handleEvent(event) {
       else if (payload.action === 'set_date') {
         let date = payload.val || (params && params.date ? params.date.replace(/-/g, '') : '');
         if (date) {
+          // 進入 Step 3
           await replyCategoryMenu(replyToken, payload.loc || "未知地點", date);
         } else {
           await client.replyMessage(replyToken, { type: 'text', text: "❌ 日期抓取失敗" });
@@ -81,10 +81,34 @@ async function handleEvent(event) {
         if (!userState.step) return;
         const finalItems = (userState.temp_items && userState.temp_items.length > 0) ? userState.temp_items.join(',') : '無';
         
-        await Promise.all([
-          stateRef.update({ step: 5, final_items: finalItems }),
-          client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItems}\n\n最後一步，請輸入實踐說明 (若無請輸入「無」)：` })
-        ]);
+        // ★ 優化 2：檢查是否有選擇「其他」
+        const hasOther = userState.temp_items && userState.temp_items.includes('其他');
+
+        if (hasOther) {
+          // 有選其他 -> 進入 Step 5 要求輸入說明
+          await Promise.all([
+            stateRef.update({ step: 5, final_items: finalItems }),
+            client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItems}\n\n您選擇了「其他」，請輸入詳細說明：` })
+          ]);
+        } else {
+          // 沒選其他 -> 略過 Step 5，直接存檔完成
+          const newRecordData = {
+            uid: userId, 
+            location: userState.location, 
+            date: userState.date, 
+            category: userState.category,
+            items: finalItems, 
+            description: '無', // 沒選其他就預設為無
+            created_at: new Date().toISOString()
+          };
+
+          await Promise.all([
+            db.collection('records').add(newRecordData),
+            stateRef.delete(),
+            client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItems}\n\n🎉 實績回報完成！資料已儲存。` }),
+            syncToGoogleSheets({ type: 'record', ...newRecordData })
+          ]);
+        }
       }
     }
 
@@ -98,7 +122,7 @@ async function handleEvent(event) {
         } else {
           await Promise.all([
             stateRef.set({ step: 'registering' }),
-            client.replyMessage(replyToken, { type: 'text', text: "【歡迎新朋友】\n請直接輸入：\n部會 經名 姓名\n範例：台灣一部 王大明 王小明" })
+            client.replyMessage(replyToken, { type: 'text', text: "【歡迎新青年】\n請直接輸入：\n部會 經名 姓名\n範例：台灣一部 王大明 王小明" })
           ]);
         }
         return;
@@ -150,7 +174,6 @@ async function handleEvent(event) {
   }
 }
 
-// --- ★ 新增：呼叫 LINE Loading 動畫的函式 ---
 async function showLoadingAnimation(userId) {
   try {
     await fetch('https://api.line.me/v2/bot/chat/loading/start', {
@@ -159,17 +182,13 @@ async function showLoadingAnimation(userId) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
       },
-      body: JSON.stringify({
-        chatId: userId,
-        loadingSeconds: 5 // 設定顯示 5 秒，但只要我們回傳訊息，動畫就會提早自動消失
-      })
+      body: JSON.stringify({ chatId: userId, loadingSeconds: 5 })
     });
   } catch (err) {
     console.error("Loading animation 觸發失敗:", err);
   }
 }
 
-// --- 呼叫 GAS 的同步函式 ---
 async function syncToGoogleSheets(data) {
   try {
     await fetch(GAS_WEBHOOK_URL, {
@@ -182,7 +201,6 @@ async function syncToGoogleSheets(data) {
   }
 }
 
-// --- 以下輔助函式與 UI 函式 ---
 async function checkUserIsRegistered(userId) {
   const doc = await db.collection('users').doc(userId).get();
   return doc.exists;
@@ -234,8 +252,13 @@ async function replyDateMenu(token, prevLoc) {
   await client.replyMessage(token, { type: 'flex', altText: '請選擇日期', contents: flex });
 }
 
+// ★ 優化 1：修改此函式，讓它一次送出兩則訊息（純文字確認 + 氣泡選單）
 async function replyCategoryMenu(token, prevLoc, prevDate) {
   const baseData = `action=select_cat&loc=${prevLoc}&date=${prevDate}`;
+  
+  // 為了讓顯示好看一點，把 20260425 格式化成 2026/04/25
+  const formattedDate = prevDate.length === 8 ? `${prevDate.substring(0,4)}/${prevDate.substring(4,6)}/${prevDate.substring(6,8)}` : prevDate;
+
   const flex = {
     type: "bubble",
     header: { type: "box", layout: "vertical", contents: [{ type: "text", text: "步驟 3/5：請選擇登錄項目", weight: "bold", color: "#1DB446" }] },
@@ -247,7 +270,12 @@ async function replyCategoryMenu(token, prevLoc, prevDate) {
       ]
     }
   };
-  await client.replyMessage(token, { type: 'flex', altText: '請選擇項目', contents: flex });
+  
+  // 使用陣列同時發送文字與 Flex 訊息
+  await client.replyMessage(token, [
+    { type: 'text', text: `📍 地點：${prevLoc}\n📅 日期：${formattedDate}` },
+    { type: 'flex', altText: '請選擇項目', contents: flex }
+  ]);
 }
 
 async function replyItemMenu(token, category, selectedList) {
