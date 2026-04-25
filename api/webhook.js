@@ -187,5 +187,3 @@ function parseQueryString(query) {
 
 // ... UI 發送函式 (replyLocationMenu 等) 請直接貼上您原本的程式碼，此處省略以節省版面 ...
 
-
-```
