@@ -46,7 +46,6 @@ async function handleEvent(event) {
       const params = event.postback.params;
       const payload = parseQueryString(data);
 
-      // ★ 新增：中斷並取消輸入
       if (payload.action === 'cancel_input') {
         await Promise.all([
           stateRef.delete(),
@@ -74,13 +73,11 @@ async function handleEvent(event) {
         ]);
       }
       
-      // ★ 新增：單選項目直接送出
       else if (payload.action === 'select_item_single') {
         if (!userState.step) return client.replyMessage(replyToken, { type: 'text', text: "⚠️ 頁面逾時，請重新輸入。" });
         await processFinalItems(userId, replyToken, stateRef, userState, payload.val);
       }
 
-      // 複選項目的切換邏輯
       else if (payload.action === 'toggle_item') {
         if (!userState.step) return client.replyMessage(replyToken, { type: 'text', text: "⚠️ 頁面逾時，請重新輸入。" });
         const item = payload.val;
@@ -94,7 +91,6 @@ async function handleEvent(event) {
         ]);
       }
       
-      // 複選項目的確認送出邏輯
       else if (payload.action === 'confirm_items') {
         if (!userState.step) return;
         const finalItems = (userState.temp_items && userState.temp_items.length > 0) ? userState.temp_items.join(',') : '無';
@@ -104,6 +100,72 @@ async function handleEvent(event) {
 
     else if (event.type === 'message' && event.message.type === 'text') {
       const text = event.message.text.trim();
+
+      // ★ 新增：實績查詢功能
+      if (text === '實績查詢') {
+        const isRegistered = await checkUserIsRegistered(userId);
+        if (!isRegistered) {
+          await client.replyMessage(replyToken, { type: 'text', text: "⚠️ 您尚未註冊。" });
+          return;
+        }
+
+        // 撈取該使用者的所有紀錄
+        const snapshot = await db.collection('records').where('uid', '==', userId).get();
+        
+        const categoryA_counts = {};
+        const categoryB_counts = {};
+
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          const rDate = data.date; // 格式如 20260426
+          
+          // 篩選日期介於 2026/04/01 ~ 2027/03/31
+          if (rDate && rDate >= '20260401' && rDate <= '20270331') {
+            const itemsStr = data.items || '';
+            if (!itemsStr || itemsStr === '無') return;
+            
+            // 處理多選的字串分割
+            const itemsArr = itemsStr.split(',');
+            
+            if (data.category === '青年會行事/活動(含VTR)') {
+              itemsArr.forEach(item => {
+                if (item !== '其他') { // 選擇性排除或包含"其他"
+                  categoryA_counts[item] = (categoryA_counts[item] || 0) + 1;
+                }
+              });
+            } else if (data.category === '個人實踐項目 (可複選)') {
+              itemsArr.forEach(item => {
+                if (item !== '其他') {
+                  categoryB_counts[item] = (categoryB_counts[item] || 0) + 1;
+                }
+              });
+            }
+          }
+        });
+
+        // 組裝回覆字串
+        let replyText = "以下是您2026/04/01至2027/03/31的實績回報資料\n\n";
+        
+        replyText += "青年會行事/活動：\n";
+        const keysA = Object.keys(categoryA_counts);
+        if (keysA.length === 0) {
+          replyText += "無\n";
+        } else {
+          // 依照次數大到小排序 (選擇性，目前依照遇到順序)
+          keysA.forEach(k => { replyText += `${k}共${categoryA_counts[k]}次\n`; });
+        }
+
+        replyText += "\n實踐項目：\n";
+        const keysB = Object.keys(categoryB_counts);
+        if (keysB.length === 0) {
+          replyText += "無\n";
+        } else {
+          keysB.forEach(k => { replyText += `${k}共${categoryB_counts[k]}次\n`; });
+        }
+
+        await client.replyMessage(replyToken, { type: 'text', text: replyText.trim() });
+        return;
+      }
 
       if (text === '青年會資訊註冊') {
         const isRegistered = await checkUserIsRegistered(userId);
@@ -164,7 +226,6 @@ async function handleEvent(event) {
   }
 }
 
-// ★ 新增：將最後確認的邏輯獨立出來，讓單選跟複選共用
 async function processFinalItems(userId, replyToken, stateRef, userState, finalItemsStr) {
   const hasOther = finalItemsStr.includes('其他');
 
@@ -243,7 +304,6 @@ async function replyLocationMenu(token) {
     action: { type: "postback", label: opt, data: `action=select_loc&val=${opt}` }
   }));
   
-  // 地點選單加入取消按鈕
   buttons.push({ type: "separator", margin: "md" });
   buttons.push({
     type: "button", style: "primary", color: "#EF454D", height: "sm", margin: "sm",
@@ -317,13 +377,11 @@ async function replyItemMenu(token, category, selectedList) {
   
   const buttons = options.map(opt => {
     if (isSingleChoice) {
-      // 單選按鈕：綁定 select_item_single，點擊直接送出
       return {
         type: "button", style: "secondary", height: "sm",
         action: { type: "postback", label: opt, data: `action=select_item_single&val=${opt}` }
       };
     } else {
-      // 複選按鈕：維持打勾邏輯
       const isSelected = selectedList.includes(opt);
       return {
         type: "button", style: isSelected ? "primary" : "secondary", color: isSelected ? "#1DB446" : "#aaaaaa", height: "sm",
@@ -334,12 +392,10 @@ async function replyItemMenu(token, category, selectedList) {
 
   buttons.push({ type: "separator", margin: "md" });
   
-  // 只有「複選」才需要產生「確認送出」按鈕
   if (!isSingleChoice) {
     buttons.push({ type: "button", style: "link", height: "sm", action: { type: "postback", label: `確認送出 (${selectedList.length}項)`, data: "action=confirm_items" } });
   }
 
-  // ★ 新增：無論單選複選，都加入紅色取消按鈕
   buttons.push({
     type: "button", style: "primary", color: "#EF454D", height: "sm", margin: "sm",
     action: { type: "postback", label: "🚫 取消本次輸入", data: "action=cancel_input" }
