@@ -46,13 +46,21 @@ async function handleEvent(event) {
       const params = event.postback.params;
       const payload = parseQueryString(data);
 
+      // ★ 新增：中斷並取消輸入
+      if (payload.action === 'cancel_input') {
+        await Promise.all([
+          stateRef.delete(),
+          client.replyMessage(replyToken, { type: 'text', text: "🚫 已取消本次實績回報。" })
+        ]);
+        return;
+      }
+
       if (payload.action === 'select_loc') {
         await replyDateMenu(replyToken, payload.val);
       }
       else if (payload.action === 'set_date') {
         let date = payload.val || (params && params.date ? params.date.replace(/-/g, '') : '');
         if (date) {
-          // 進入 Step 3
           await replyCategoryMenu(replyToken, payload.loc || "未知地點", date);
         } else {
           await client.replyMessage(replyToken, { type: 'text', text: "❌ 日期抓取失敗" });
@@ -65,6 +73,14 @@ async function handleEvent(event) {
           replyItemMenu(replyToken, payload.val, [])
         ]);
       }
+      
+      // ★ 新增：單選項目直接送出
+      else if (payload.action === 'select_item_single') {
+        if (!userState.step) return client.replyMessage(replyToken, { type: 'text', text: "⚠️ 頁面逾時，請重新輸入。" });
+        await processFinalItems(userId, replyToken, stateRef, userState, payload.val);
+      }
+
+      // 複選項目的切換邏輯
       else if (payload.action === 'toggle_item') {
         if (!userState.step) return client.replyMessage(replyToken, { type: 'text', text: "⚠️ 頁面逾時，請重新輸入。" });
         const item = payload.val;
@@ -77,38 +93,12 @@ async function handleEvent(event) {
           replyItemMenu(replyToken, userState.category, currentList)
         ]);
       }
+      
+      // 複選項目的確認送出邏輯
       else if (payload.action === 'confirm_items') {
         if (!userState.step) return;
         const finalItems = (userState.temp_items && userState.temp_items.length > 0) ? userState.temp_items.join(',') : '無';
-        
-        // ★ 優化 2：檢查是否有選擇「其他」
-        const hasOther = userState.temp_items && userState.temp_items.includes('其他');
-
-        if (hasOther) {
-          // 有選其他 -> 進入 Step 5 要求輸入說明
-          await Promise.all([
-            stateRef.update({ step: 5, final_items: finalItems }),
-            client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItems}\n\n您選擇了「其他」，請輸入詳細說明：` })
-          ]);
-        } else {
-          // 沒選其他 -> 略過 Step 5，直接存檔完成
-          const newRecordData = {
-            uid: userId, 
-            location: userState.location, 
-            date: userState.date, 
-            category: userState.category,
-            items: finalItems, 
-            description: '無', // 沒選其他就預設為無
-            created_at: new Date().toISOString()
-          };
-
-          await Promise.all([
-            db.collection('records').add(newRecordData),
-            stateRef.delete(),
-            client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItems}\n\n🎉 實績回報完成！資料已儲存。` }),
-            syncToGoogleSheets({ type: 'record', ...newRecordData })
-          ]);
-        }
+        await processFinalItems(userId, replyToken, stateRef, userState, finalItems);
       }
     }
 
@@ -174,6 +164,35 @@ async function handleEvent(event) {
   }
 }
 
+// ★ 新增：將最後確認的邏輯獨立出來，讓單選跟複選共用
+async function processFinalItems(userId, replyToken, stateRef, userState, finalItemsStr) {
+  const hasOther = finalItemsStr.includes('其他');
+
+  if (hasOther) {
+    await Promise.all([
+      stateRef.update({ step: 5, final_items: finalItemsStr }),
+      client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItemsStr}\n\n您選擇了「其他」，請輸入詳細說明：` })
+    ]);
+  } else {
+    const newRecordData = {
+      uid: userId, 
+      location: userState.location, 
+      date: userState.date, 
+      category: userState.category,
+      items: finalItemsStr, 
+      description: '無', 
+      created_at: new Date().toISOString()
+    };
+
+    await Promise.all([
+      db.collection('records').add(newRecordData),
+      stateRef.delete(),
+      client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItemsStr}\n\n🎉 實績回報完成！資料已儲存。` }),
+      syncToGoogleSheets({ type: 'record', ...newRecordData })
+    ]);
+  }
+}
+
 async function showLoadingAnimation(userId) {
   try {
     await fetch('https://api.line.me/v2/bot/chat/loading/start', {
@@ -223,6 +242,14 @@ async function replyLocationMenu(token) {
     type: "button", style: "secondary", height: "sm",
     action: { type: "postback", label: opt, data: `action=select_loc&val=${opt}` }
   }));
+  
+  // 地點選單加入取消按鈕
+  buttons.push({ type: "separator", margin: "md" });
+  buttons.push({
+    type: "button", style: "primary", color: "#EF454D", height: "sm", margin: "sm",
+    action: { type: "postback", label: "🚫 取消本次輸入", data: "action=cancel_input" }
+  });
+
   const flex = {
     type: "bubble",
     header: { type: "box", layout: "vertical", contents: [{ type: "text", text: "步驟 1/5：請選擇參加地點", weight: "bold", color: "#1DB446" }] },
@@ -245,18 +272,17 @@ async function replyDateMenu(token, prevLoc) {
       type: "box", layout: "vertical", spacing: "md",
       contents: [
         { type: "button", style: "primary", color: "#1DB446", action: { type: "postback", label: `今天 (${todayDisplay})`, data: `${baseData}&val=${todayStr}` } },
-        { type: "button", style: "secondary", action: { type: "datetimepicker", label: "選擇其他日期", data: baseData, mode: "date" } }
+        { type: "button", style: "secondary", action: { type: "datetimepicker", label: "選擇其他日期", data: baseData, mode: "date" } },
+        { type: "separator", margin: "md" },
+        { type: "button", style: "primary", color: "#EF454D", action: { type: "postback", label: "🚫 取消本次輸入", data: "action=cancel_input" } }
       ]
     }
   };
   await client.replyMessage(token, { type: 'flex', altText: '請選擇日期', contents: flex });
 }
 
-// ★ 優化 1：修改此函式，讓它一次送出兩則訊息（純文字確認 + 氣泡選單）
 async function replyCategoryMenu(token, prevLoc, prevDate) {
   const baseData = `action=select_cat&loc=${prevLoc}&date=${prevDate}`;
-  
-  // 為了讓顯示好看一點，把 20260425 格式化成 2026/04/25
   const formattedDate = prevDate.length === 8 ? `${prevDate.substring(0,4)}/${prevDate.substring(4,6)}/${prevDate.substring(6,8)}` : prevDate;
 
   const flex = {
@@ -266,12 +292,13 @@ async function replyCategoryMenu(token, prevLoc, prevDate) {
       type: "box", layout: "vertical", spacing: "md",
       contents: [
         { type: "button", style: "primary", action: { type: "postback", label: "青年會行事/活動(含VTR)", data: `${baseData}&val=青年會行事/活動(含VTR)` } },
-        { type: "button", style: "primary", action: { type: "postback", label: "個人實踐項目 (可複選)", data: `${baseData}&val=個人實踐項目 (可複選)` } }
+        { type: "button", style: "primary", action: { type: "postback", label: "個人實踐項目 (可複選)", data: `${baseData}&val=個人實踐項目 (可複選)` } },
+        { type: "separator", margin: "md" },
+        { type: "button", style: "primary", color: "#EF454D", action: { type: "postback", label: "🚫 取消本次輸入", data: "action=cancel_input" } }
       ]
     }
   };
   
-  // 使用陣列同時發送文字與 Flex 訊息
   await client.replyMessage(token, [
     { type: 'text', text: `📍 地點：${prevLoc}\n📅 日期：${formattedDate}` },
     { type: 'flex', altText: '請選擇項目', contents: flex }
@@ -280,26 +307,48 @@ async function replyCategoryMenu(token, prevLoc, prevDate) {
 
 async function replyItemMenu(token, category, selectedList) {
   let options = [];
-  if (category === "青年會行事/活動(含VTR)") {
+  const isSingleChoice = (category === "青年會行事/活動(含VTR)");
+
+  if (isSingleChoice) {
     options = ["回歸聖地親苑", "6/9靈尊教導院祈念未來", "7/2靈尊真導院祈念未來", "8/6真如靈祖祈念未來", "7/19真如開祖祈念未來", "夏期鍊成第一天(8-9月)", "夏期鍊成第二天(9-10月)", "演講大會(9-10月)", "蛇瀧研修說明會(11-12月)", "青年經親說明會(12-1月)", "幹部委員說明會(12-1月)", "蛇瀧研修實績確認者說明會", "親子一體運動會", "其他"];
   } else {
     options = ["度眾", "歡喜", "奉侍", "舉辦青年家庭集會", "參加集會", "接心", "參加法會", "參加青年會合", "參加會座(初座/菩提會/本會座)", "參加幹部委員研修", "參加青年經親研修", "參加幹部會合", "參加部門會合", "參加信仰心向上會合", "拜讀一如之道究道篇(全)", "拜讀真如苑歷史", "參加總部會", "參加總部會會後會", "回歸聖地親苑", "其他"];
   }
   
   const buttons = options.map(opt => {
-    const isSelected = selectedList.includes(opt);
-    return {
-      type: "button", style: isSelected ? "primary" : "secondary", color: isSelected ? "#1DB446" : "#aaaaaa", height: "sm",
-      action: { type: "postback", label: isSelected ? `✅ ${opt}` : opt, data: `action=toggle_item&val=${opt}` }
-    };
+    if (isSingleChoice) {
+      // 單選按鈕：綁定 select_item_single，點擊直接送出
+      return {
+        type: "button", style: "secondary", height: "sm",
+        action: { type: "postback", label: opt, data: `action=select_item_single&val=${opt}` }
+      };
+    } else {
+      // 複選按鈕：維持打勾邏輯
+      const isSelected = selectedList.includes(opt);
+      return {
+        type: "button", style: isSelected ? "primary" : "secondary", color: isSelected ? "#1DB446" : "#aaaaaa", height: "sm",
+        action: { type: "postback", label: isSelected ? `✅ ${opt}` : opt, data: `action=toggle_item&val=${opt}` }
+      };
+    }
   });
+
   buttons.push({ type: "separator", margin: "md" });
-  buttons.push({ type: "button", style: "link", height: "sm", action: { type: "postback", label: `確認送出 (${selectedList.length}項)`, data: "action=confirm_items" } });
+  
+  // 只有「複選」才需要產生「確認送出」按鈕
+  if (!isSingleChoice) {
+    buttons.push({ type: "button", style: "link", height: "sm", action: { type: "postback", label: `確認送出 (${selectedList.length}項)`, data: "action=confirm_items" } });
+  }
+
+  // ★ 新增：無論單選複選，都加入紅色取消按鈕
+  buttons.push({
+    type: "button", style: "primary", color: "#EF454D", height: "sm", margin: "sm",
+    action: { type: "postback", label: "🚫 取消本次輸入", data: "action=cancel_input" }
+  });
 
   const flex = {
     type: "bubble",
     header: { type: "box", layout: "vertical", contents: [
-      { type: "text", text: "步驟 4/5：實踐項目 (可複選)", weight: "bold", color: "#1DB446" },
+      { type: "text", text: `步驟 4/5：實踐項目 ${isSingleChoice ? "(單選)" : "(可複選)"}`, weight: "bold", color: "#1DB446" },
       { type: "text", text: category, size: "xs", color: "#aaaaaa", wrap: true }
     ]},
     body: { type: "box", layout: "vertical", spacing: "sm", contents: buttons }
