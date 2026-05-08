@@ -96,12 +96,34 @@ async function handleEvent(event) {
         const finalItems = (userState.temp_items && userState.temp_items.length > 0) ? userState.temp_items.join(',') : '無';
         await processFinalItems(userId, replyToken, stateRef, userState, finalItems);
       }
+
+      // ★ 修改：法會項目變更為單選邏輯 (點擊直接進入下一步或送出)
+      else if (payload.action === 'select_service_single') {
+        if (!userState.step) return client.replyMessage(replyToken, { type: 'text', text: "⚠️ 頁面逾時，請重新輸入。" });
+        
+        const selectedService = payload.val;
+        const hasOther = selectedService === '其他';
+
+        if (hasOther) {
+           // 如果法會單選選了「其他」，進入 4.6 要求說明
+           await Promise.all([
+            stateRef.update({ step: 4.6, final_services: selectedService }),
+            client.replyMessage(replyToken, { type: 'text', text: `已記錄法會：${selectedService}\n\n您選擇了「其他」，請輸入法會詳細說明：` })
+          ]);
+        } else {
+           // 法會單選選了其他既有項目，直接存檔完成
+           await saveRecordToDB(userId, replyToken, stateRef, userState, {
+            services: selectedService,
+            service_desc: '無',
+            description: '無'
+          });
+        }
+      }
     }
 
     else if (event.type === 'message' && event.message.type === 'text') {
       const text = event.message.text.trim();
 
-      // ★ 新增：實績查詢功能
       if (text === '實績查詢') {
         const isRegistered = await checkUserIsRegistered(userId);
         if (!isRegistered) {
@@ -109,59 +131,56 @@ async function handleEvent(event) {
           return;
         }
 
-        // 撈取該使用者的所有紀錄
         const snapshot = await db.collection('records').where('uid', '==', userId).get();
         
         const categoryA_counts = {};
         const categoryB_counts = {};
+        const service_counts = {}; 
 
         snapshot.forEach(doc => {
           const data = doc.data();
-          const rDate = data.date; // 格式如 20260426
+          const rDate = data.date; 
           
-          // 篩選日期介於 2026/04/01 ~ 2027/03/31
           if (rDate && rDate >= '20260401' && rDate <= '20270331') {
             const itemsStr = data.items || '';
-            if (!itemsStr || itemsStr === '無') return;
-            
-            // 處理多選的字串分割
-            const itemsArr = itemsStr.split(',');
-            
-            if (data.category === '青年會行事/活動(含VTR)') {
-              itemsArr.forEach(item => {
-                if (item !== '其他') { // 選擇性排除或包含"其他"
-                  categoryA_counts[item] = (categoryA_counts[item] || 0) + 1;
-                }
-              });
-            } else if (data.category === '個人實踐項目 (可複選)') {
-              itemsArr.forEach(item => {
-                if (item !== '其他') {
-                  categoryB_counts[item] = (categoryB_counts[item] || 0) + 1;
-                }
-              });
+            const servicesStr = data.services || '';
+
+            if (itemsStr && itemsStr !== '無') {
+              const itemsArr = itemsStr.split(',');
+              if (data.category === '青年會行事/活動(含VTR)') {
+                itemsArr.forEach(item => {
+                  if (item !== '其他') categoryA_counts[item] = (categoryA_counts[item] || 0) + 1;
+                });
+              } else if (data.category === '個人實踐項目 (可複選)') {
+                itemsArr.forEach(item => {
+                  if (item !== '其他') categoryB_counts[item] = (categoryB_counts[item] || 0) + 1;
+                });
+              }
+            }
+
+            if (servicesStr && servicesStr !== '無') {
+              // 法會現在是單選，不再需要 split(',')，直接計數
+               if (servicesStr !== '其他') service_counts[servicesStr] = (service_counts[servicesStr] || 0) + 1;
             }
           }
         });
 
-        // 組裝回覆字串
         let replyText = "以下是您2026/04/01至2027/03/31的實績回報資料\n\n";
         
         replyText += "青年會行事/活動：\n";
         const keysA = Object.keys(categoryA_counts);
-        if (keysA.length === 0) {
-          replyText += "無\n";
-        } else {
-          // 依照次數大到小排序 (選擇性，目前依照遇到順序)
-          keysA.forEach(k => { replyText += `${k}共${categoryA_counts[k]}次\n`; });
-        }
+        if (keysA.length === 0) replyText += "無\n";
+        else keysA.forEach(k => { replyText += `${k}共${categoryA_counts[k]}次\n`; });
 
         replyText += "\n實踐項目：\n";
         const keysB = Object.keys(categoryB_counts);
-        if (keysB.length === 0) {
-          replyText += "無\n";
-        } else {
-          keysB.forEach(k => { replyText += `${k}共${categoryB_counts[k]}次\n`; });
-        }
+        if (keysB.length === 0) replyText += "無\n";
+        else keysB.forEach(k => { replyText += `${k}共${categoryB_counts[k]}次\n`; });
+
+        replyText += "\n法會參與：\n";
+        const keysS = Object.keys(service_counts);
+        if (keysS.length === 0) replyText += "無\n";
+        else keysS.forEach(k => { replyText += `${k}共${service_counts[k]}次\n`; });
 
         await client.replyMessage(replyToken, { type: 'text', text: replyText.trim() });
         return;
@@ -193,7 +212,7 @@ async function handleEvent(event) {
       if (userState.step === 'registering') {
         const parts = text.split(/\s+/);
         if (parts.length === 3) {
-          const newUserData = { uid: userId, ministry: parts[0], sutra_name: parts[1], name: parts[2], reg_date: new Date().toISOString() };
+          const newUserData = { uid: userId, ministry: parts[0], sutra_name: parts[1], name: parts[2], reg_date: getTaiwanTime() };
           
           await Promise.all([
             db.collection('users').doc(userId).set(newUserData),
@@ -207,18 +226,22 @@ async function handleEvent(event) {
         return;
       }
 
-      if (userState.step === 5) {
-        const newRecordData = {
-          uid: userId, location: userState.location, date: userState.date, category: userState.category,
-          items: userState.final_items, description: text, created_at: new Date().toISOString()
-        };
+      if (userState.step === 4.6) {
+        await saveRecordToDB(userId, replyToken, stateRef, userState, {
+          services: userState.final_services || '無',
+          service_desc: text,
+          description: '無'
+        });
+        return;
+      }
 
-        await Promise.all([
-          db.collection('records').add(newRecordData),
-          stateRef.delete(),
-          client.replyMessage(replyToken, { type: 'text', text: "🎉 實績回報完成！資料已儲存。" }),
-          syncToGoogleSheets({ type: 'record', ...newRecordData })
-        ]);
+      if (userState.step === 5) {
+        await saveRecordToDB(userId, replyToken, stateRef, userState, {
+          services: '無',
+          service_desc: '無',
+          description: text
+        });
+        return;
       }
     }
   } catch (error) {
@@ -227,6 +250,18 @@ async function handleEvent(event) {
 }
 
 async function processFinalItems(userId, replyToken, stateRef, userState, finalItemsStr) {
+  const isCategoryB = userState.category === '個人實踐項目 (可複選)';
+  const hasService = finalItemsStr.includes('參加法會');
+
+  // 如果包含法會，進入步驟 4.5 顯示單選法會選單
+  if (isCategoryB && hasService) {
+    await Promise.all([
+      stateRef.update({ step: 4.5, final_items: finalItemsStr }),
+      replyServiceMenu(replyToken) // 不再傳遞 selectedList，因為是單選
+    ]);
+    return; 
+  }
+
   const hasOther = finalItemsStr.includes('其他');
 
   if (hasOther) {
@@ -235,23 +270,50 @@ async function processFinalItems(userId, replyToken, stateRef, userState, finalI
       client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItemsStr}\n\n您選擇了「其他」，請輸入詳細說明：` })
     ]);
   } else {
-    const newRecordData = {
-      uid: userId, 
-      location: userState.location, 
-      date: userState.date, 
-      category: userState.category,
-      items: finalItemsStr, 
-      description: '無', 
-      created_at: new Date().toISOString()
-    };
-
-    await Promise.all([
-      db.collection('records').add(newRecordData),
-      stateRef.delete(),
-      client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItemsStr}\n\n🎉 實績回報完成！資料已儲存。` }),
-      syncToGoogleSheets({ type: 'record', ...newRecordData })
-    ]);
+    await saveRecordToDB(userId, replyToken, stateRef, userState, {
+      services: '無',
+      service_desc: '無',
+      description: '無'
+    });
   }
+}
+
+async function saveRecordToDB(userId, replyToken, stateRef, userState, extraFields) {
+  const newRecordData = {
+    uid: userId, 
+    location: userState.location, 
+    date: userState.date, 
+    category: userState.category,
+    items: userState.final_items || '無', 
+    services: extraFields.services,
+    service_desc: extraFields.service_desc,
+    description: extraFields.description, 
+    created_at: getTaiwanTime()
+  };
+
+  await Promise.all([
+    db.collection('records').add(newRecordData),
+    stateRef.delete(),
+    client.replyMessage(replyToken, { type: 'text', text: "🎉 實績回報完成！資料已儲存。" }),
+    syncToGoogleSheets({ 
+      type: 'record', 
+      ...newRecordData, 
+      description: "'" + newRecordData.description,
+      service_desc: "'" + newRecordData.service_desc 
+    })
+  ]);
+}
+
+function getTaiwanTime() {
+  const now = new Date();
+  now.setHours(now.getHours() + 8); 
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  const h = String(now.getUTCHours()).padStart(2, '0');
+  const min = String(now.getUTCMinutes()).padStart(2, '0');
+  const s = String(now.getUTCSeconds()).padStart(2, '0');
+  return `${y}/${m}/${d} ${h}:${min}:${s}`;
 }
 
 async function showLoadingAnimation(userId) {
@@ -372,7 +434,7 @@ async function replyItemMenu(token, category, selectedList) {
   if (isSingleChoice) {
     options = ["回歸聖地親苑", "6/9靈尊教導院祈念未來", "7/2靈尊真導院祈念未來", "8/6真如靈祖祈念未來", "7/19真如開祖祈念未來", "夏期鍊成第一天(8-9月)", "夏期鍊成第二天(9-10月)", "演講大會(9-10月)", "蛇瀧研修說明會(11-12月)", "青年經親說明會(12-1月)", "幹部委員說明會(12-1月)", "蛇瀧研修實績確認者說明會", "親子一體運動會", "其他"];
   } else {
-    options = ["度眾", "歡喜", "奉侍", "舉辦青年家庭集會", "參加集會", "接心", "參加法會", "參加青年會合", "參加會座(初座/菩提會/本會座)", "參加幹部委員研修", "參加青年經親研修", "參加幹部會合", "參加部門會合", "參加信仰心向上會合", "拜讀一如之道究道篇(全)", "拜讀真如苑歷史", "參加總部會", "參加總部會會後會", "回歸聖地親苑", "其他"];
+    options = ["度眾", "歡喜", "奉侍", "舉辦青年家庭集會", "參加集會", "接心", "參加法會", "參加青年會合", "參加會座(初座/菩提會/本會座)", "參加幹部委員研修", "參加青年經親研修", "參加幹部會合", "參加部門會合", "參加信仰心向上會合", "拜讀一如之道究道篇(全)", "拜讀真如苑歷史", "參加總部會", "參加總部會會後會", "回歸聖地親苑"];
   }
   
   const buttons = options.map(opt => {
@@ -410,4 +472,41 @@ async function replyItemMenu(token, category, selectedList) {
     body: { type: "box", layout: "vertical", spacing: "sm", contents: buttons }
   };
   await client.replyMessage(token, { type: 'flex', altText: '請選擇細項', contents: flex });
+}
+
+// ★ 修改：法會子選單變更為單選邏輯 UI
+async function replyServiceMenu(token) {
+  const options = [
+    "真如教主 120 歲誕辰慶典（3/28）",
+    "真導院 89 歲誕辰慶典（4/8）",
+    "靈廟莊嚴祈誓 真如濟攝會 （4/18）",
+    "One Heart 慶典-真如繼主慶生會（4/25）",
+    "攝受心院 114 歲誕辰慶典（5/9）",
+    "靈尊教導院・定心法會（6/9）",
+    "靈尊真導院・成行法會（7/2）",
+    "真如開祖・恆明法會（7/19）",
+    "教導院 92 歲誕辰慶典（7/29）",
+    "真如靈祖・湧祥法會（8/6）",
+    "其他"
+  ];
+  
+  const buttons = options.map(opt => {
+    return {
+      type: "button", style: "secondary", height: "sm",
+      action: { type: "postback", label: opt, data: `action=select_service_single&val=${opt}` }
+    };
+  });
+
+  buttons.push({ type: "separator", margin: "md" });
+  buttons.push({
+    type: "button", style: "primary", color: "#EF454D", height: "sm", margin: "sm",
+    action: { type: "postback", label: "🚫 取消本次輸入", data: "action=cancel_input" }
+  });
+
+  const flex = {
+    type: "bubble",
+    header: { type: "box", layout: "vertical", contents: [{ type: "text", text: "附加選項：請選擇法會項目 (單選)", weight: "bold", color: "#1DB446" }]},
+    body: { type: "box", layout: "vertical", spacing: "sm", contents: buttons }
+  };
+  await client.replyMessage(token, { type: 'flex', altText: '請選擇法會項目', contents: flex });
 }
