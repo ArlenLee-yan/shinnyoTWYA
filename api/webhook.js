@@ -141,7 +141,7 @@ async function handleEvent(event) {
           const data = doc.data();
           const rDate = data.date; 
           
-          if (rDate && rDate >= '20260401' && rDate <= '20270331') {
+          if (rDate && rDate >= '20260501' && rDate <= '20270430') {
             const itemsStr = data.items || '';
             const servicesStr = data.services || '';
 
@@ -165,7 +165,7 @@ async function handleEvent(event) {
           }
         });
 
-        let replyText = "以下是您2026/04/01至2027/03/31的實績回報資料\n\n";
+        let replyText = "以下是您青年會2026年度實績回報資料\n\n";
         
         replyText += "青年會行事/活動：\n";
         const keysA = Object.keys(categoryA_counts);
