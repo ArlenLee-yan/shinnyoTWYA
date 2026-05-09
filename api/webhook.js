@@ -97,7 +97,6 @@ async function handleEvent(event) {
         await processFinalItems(userId, replyToken, stateRef, userState, finalItems);
       }
 
-      // ★ 修改：法會項目變更為單選邏輯 (點擊直接進入下一步或送出)
       else if (payload.action === 'select_service_single') {
         if (!userState.step) return client.replyMessage(replyToken, { type: 'text', text: "⚠️ 頁面逾時，請重新輸入。" });
         
@@ -105,13 +104,11 @@ async function handleEvent(event) {
         const hasOther = selectedService === '其他';
 
         if (hasOther) {
-           // 如果法會單選選了「其他」，進入 4.6 要求說明
            await Promise.all([
             stateRef.update({ step: 4.6, final_services: selectedService }),
             client.replyMessage(replyToken, { type: 'text', text: `已記錄法會：${selectedService}\n\n您選擇了「其他」，請輸入法會詳細說明：` })
           ]);
         } else {
-           // 法會單選選了其他既有項目，直接存檔完成
            await saveRecordToDB(userId, replyToken, stateRef, userState, {
             services: selectedService,
             service_desc: '無',
@@ -159,7 +156,6 @@ async function handleEvent(event) {
             }
 
             if (servicesStr && servicesStr !== '無') {
-              // 法會現在是單選，不再需要 split(',')，直接計數
                if (servicesStr !== '其他') service_counts[servicesStr] = (service_counts[servicesStr] || 0) + 1;
             }
           }
@@ -253,11 +249,10 @@ async function processFinalItems(userId, replyToken, stateRef, userState, finalI
   const isCategoryB = userState.category === '個人實踐項目 (可複選)';
   const hasService = finalItemsStr.includes('參加法會');
 
-  // 如果包含法會，進入步驟 4.5 顯示單選法會選單
   if (isCategoryB && hasService) {
     await Promise.all([
       stateRef.update({ step: 4.5, final_items: finalItemsStr }),
-      replyServiceMenu(replyToken) // 不再傳遞 selectedList，因為是單選
+      replyServiceMenu(replyToken)
     ]);
     return; 
   }
@@ -270,6 +265,8 @@ async function processFinalItems(userId, replyToken, stateRef, userState, finalI
       client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItemsStr}\n\n您選擇了「其他」，請輸入詳細說明：` })
     ]);
   } else {
+    // ★ 修正：將直接送出的項目賦值給 userState，確保 saveRecordToDB 抓得到最新的值
+    userState.final_items = finalItemsStr;
     await saveRecordToDB(userId, replyToken, stateRef, userState, {
       services: '無',
       service_desc: '無',
@@ -474,7 +471,6 @@ async function replyItemMenu(token, category, selectedList) {
   await client.replyMessage(token, { type: 'flex', altText: '請選擇細項', contents: flex });
 }
 
-// ★ 修改：法會子選單變更為單選邏輯 UI
 async function replyServiceMenu(token) {
   const options = [
     "真如教主 120 歲誕辰慶典（3/28）",
