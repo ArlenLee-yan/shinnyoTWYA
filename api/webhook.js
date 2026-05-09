@@ -265,7 +265,7 @@ async function processFinalItems(userId, replyToken, stateRef, userState, finalI
       client.replyMessage(replyToken, { type: 'text', text: `已記錄項目：${finalItemsStr}\n\n您選擇了「其他」，請輸入詳細說明：` })
     ]);
   } else {
-    // ★ 修正：將直接送出的項目賦值給 userState，確保 saveRecordToDB 抓得到最新的值
+    // 確保最終項目有寫入物件中，以防下一步存檔時抓不到資料
     userState.final_items = finalItemsStr;
     await saveRecordToDB(userId, replyToken, stateRef, userState, {
       services: '無',
@@ -452,7 +452,15 @@ async function replyItemMenu(token, category, selectedList) {
   buttons.push({ type: "separator", margin: "md" });
   
   if (!isSingleChoice) {
-    buttons.push({ type: "button", style: "link", height: "sm", action: { type: "postback", label: `確認送出 (${selectedList.length}項)`, data: "action=confirm_items" } });
+    // ★ 樣式修改：將 style 調整為 primary (實心按鈕)，並賦予明顯的藍色 (#007BFF)
+    buttons.push({ 
+      type: "button", 
+      style: "primary", 
+      color: "#007BFF", 
+      height: "sm", 
+      margin: "sm",
+      action: { type: "postback", label: `確認送出 (${selectedList.length}項)`, data: "action=confirm_items" } 
+    });
   }
 
   buttons.push({
